@@ -1,4 +1,12 @@
 h1 {
-    color: black;
-    background-color: aqua;
+    color: white;
+}
+
+p {
+    color: green;
+}
+
+.Hello {
+    background-color: black;
+    padding: 20px;
 }
