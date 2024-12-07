@@ -11,30 +11,28 @@ data "aws_vpc" "default" {
 
 # Get a default subnet
 data "aws_subnet" "default" {
-  vpc_id = data.aws_vpc.default.id
+  vpc_id            = data.aws_vpc.default.id
   availability_zone = "eu-west-2a"
 }
-
-
 
 ########################################## EC2 INSTANCE SETUP ##############################################
 
 # EC2 Instance (t2.micro) for the Web Server
 resource "aws_instance" "web_server" {
-    ami = "ami-0e8d228ad90af673b"
-    instance_type = "t2.micro"
-    availability_zone = "eu-west-2a"
-    key_name = "main-key"
+  ami               = "ami-0e8d228ad90af673b"
+  instance_type     = "t2.micro"
+  availability_zone = "eu-west-2a"
+  key_name          = "main-key"
 
-    tags = {
-      Name = "StaticContentWebServer"
-    }
+  tags = {
+    Name = "StaticContentWebServer"
+  }
 
-    # Security Group to allow port 80 (HTTP) and port 22 (SSH) access
-    security_groups = [aws_security_group.web_sg.name]
+  # Security Group to allow port 80 (HTTP) and port 22 (SSH) access
+  security_groups = [aws_security_group.web_sg.name]
 
-    # Auto install web server
-    user_data = <<-EOF
+  # Auto install web server
+  user_data = <<-EOF
                 #!/bin/bash
                 yum update -y
                 yum install -y httpd
@@ -45,28 +43,28 @@ resource "aws_instance" "web_server" {
 
 # Setting up Security Group for the EC2 Instance
 resource "aws_security_group" "web_sg" {
-    name_prefix = "web-sg"
+  name_prefix = "web-sg"
 
-    ingress {
-        from_port = 80
-        to_port = 80
-        protocol = "HTTP"
-        cidr_blocks = ["0.0.0.0/0"]
-    }
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "HTTP"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-    ingress {
-        from_port = 22
-        to_port = 22
-        protocol = "SSH"
-        cidr_blocks = ["0.0.0.0/0"]
-    }
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "SSH"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-    egress {
-      from_port = 0
-      to_port = 0
-      protocol = "-1"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 ##################### DYNAMODB DATABASE - NOT NEEDED (For dynamic content storage only) #########################
