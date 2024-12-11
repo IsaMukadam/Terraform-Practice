@@ -108,7 +108,7 @@ resource "aws_security_group" "lamp_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = [data.aws_ssm_parameter.home_ip.value] # Restrict access to your home IP
+    cidr_blocks = ["${data.aws_ssm_parameter.home_ip.value}/32"] # Restrict access to your home IP
   }
 
   egress {
@@ -136,7 +136,7 @@ resource "aws_security_group" "rds_sg" {
     from_port   = 3306
     to_port     = 3306
     protocol    = "tcp"
-    cidr_blocks = [data.aws_ssm_parameter.home_ip.value] # Change to specific IP or block
+    cidr_blocks = ["${data.aws_ssm_parameter.home_ip.value}/32"] # Change to specific IP or block
   }
 
   egress {
@@ -149,6 +149,7 @@ resource "aws_security_group" "rds_sg" {
 
 # EC2 Instance for LAMP Stack
 resource "aws_instance" "lamp_instance" {
+  depends_on        = [aws_db_instance.lamp_db]
   ami               = "ami-0c76bd4bd302b30ec" # Amazon Linux 2 AMI
   instance_type     = "t2.micro"
   key_name          = "main-key"
@@ -182,12 +183,13 @@ resource "aws_instance" "lamp_instance" {
   }
 }
 
-# Amazon RDS for MySQL Database
+# Amazon RDS for MariaDB Database
 resource "aws_db_instance" "lamp_db" {
   allocated_storage      = 20
   storage_type           = "gp2"
-  instance_class         = "db.t2.micro"
-  engine                 = "mysql"
+  instance_class         = "db.t3.micro"
+  availability_zone      = "eu-west-2a"
+  engine                 = "mysql" # mysql db
   engine_version         = "8.0"
   username               = "admin"
   password               = data.aws_ssm_parameter.rds_password.value # Fetch password from SSM
@@ -198,7 +200,7 @@ resource "aws_db_instance" "lamp_db" {
   multi_az               = false
 
   tags = {
-    Name = "LAMP-MySQL-DB"
+    Name = "LAMP-MariaDB-DB"
   }
 }
 
@@ -208,12 +210,13 @@ resource "null_resource" "lamp_db_init" {
 
   provisioner "local-exec" {
     command = <<EOT
-      while ! mysql -h ${aws_db_instance.lamp_db.endpoint} -u admin -p${data.aws_ssm_parameter.rds_password.value} -e "status"; do
-        echo "Waiting for MySQL to be ready..."
-        sleep 5
-      done
+    #!/bin/bash
+    while ! mysql -h ${aws_db_instance.lamp_db.endpoint} -u admin -p"${data.aws_ssm_parameter.rds_password.value}" -e "status"; do
+      echo "Waiting for MySQL to be ready..."
+      sleep 5
+    done
 
-      mysql -h ${aws_db_instance.lamp_db.endpoint} -u admin -p${data.aws_ssm_parameter.rds_password.value} -e "
+    mysql -h ${aws_db_instance.lamp_db.endpoint} -u admin -p"${data.aws_ssm_parameter.rds_password.value}" -e "
       CREATE DATABASE IF NOT EXISTS sampledb;
       USE sampledb;
       CREATE TABLE IF NOT EXISTS users (
@@ -222,12 +225,13 @@ resource "null_resource" "lamp_db_init" {
         email VARCHAR(100)
       );
       INSERT INTO users (name, email) VALUES
-      ('John Doe', 'john@example.com'),
-      ('Jane Doe', 'jane@example.com'),
-      ('Alice Smith', 'alice@example.com');
+        ('John Doe', 'john@example.com'),
+        ('Jane Doe', 'jane@example.com'),
+        ('Alice Smith', 'alice@example.com');
     "
-    EOT
+  EOT
   }
+
 }
 
 ########################################### CREATE SSM Parameter #############################################
@@ -236,10 +240,6 @@ resource "aws_ssm_parameter" "rds_endpoint" {
   name  = "/lamp/rds_endpoint"
   type  = "String"
   value = aws_db_instance.lamp_db.endpoint
-
-  lifecycle {
-    prevent_destroy = true // An example rule to prevent accidental deletion
-  }
 }
 
 ################################################ OUTPUTS #####################################################
