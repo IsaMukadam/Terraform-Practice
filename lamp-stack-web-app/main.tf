@@ -4,6 +4,20 @@ provider "aws" {
   region = "eu-west-2"
 }
 
+########################################## FETCH DATA #####################################################
+
+# Fetch the RDS Password from SSM
+data "aws_ssm_parameter" "rds_password" {
+  name            = "/lamp/rds_password"
+  with_decryption = true
+}
+
+# Fetch my IP
+data "aws_ssm_parameter" "home_ip" {
+  name            = "/lamp/home_ip"
+  with_decryption = true
+}
+
 # Get the default VPC in the region
 data "aws_vpc" "default" {
   default = true
@@ -14,6 +28,66 @@ data "aws_subnet" "default" {
   vpc_id            = data.aws_vpc.default.id
   availability_zone = "eu-west-2a"
 }
+
+################################## CREATE IAM SSM ROLE & INSTANCE PROFILE ##################################
+
+# Create IAM Role for EC2
+resource "aws_iam_role" "ec2_ssm_role" {
+  name = "ec2_ssm_role"
+
+  # Attach policy to allow SSM access
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+# Policy to allow SSM actions
+resource "aws_iam_policy" "ec2_ssm_policy" {
+  name        = "ec2_ssm_policy"
+  description = "Policy allowing EC2 to access SSM"
+
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:DescribeParameters"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+}
+
+# Attach the policy to the role
+resource "aws_iam_policy_attachment" "ec2_ssm_attachment" {
+  name       = "ec2_ssm_attachment"
+  roles      = [aws_iam_role.ec2_ssm_role.name]
+  policy_arn = aws_iam_policy.ec2_ssm_policy.arn
+}
+
+# Create the Instance Profile
+resource "aws_iam_instance_profile" "ec2_ssm_role" {
+  name = "ec2_ssm_role_profile"
+  role = aws_iam_role.ec2_ssm_role.name
+}
+
 
 ########################################## EC2 INSTANCE SETUP ##############################################
 
@@ -34,7 +108,7 @@ resource "aws_security_group" "lamp_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [data.aws_ssm_parameter.home_ip.value] # Restrict access to your home IP
   }
 
   egress {
@@ -62,7 +136,7 @@ resource "aws_security_group" "rds_sg" {
     from_port   = 3306
     to_port     = 3306
     protocol    = "tcp"
-    cidr_blocks = ["your-ip-address/32"] # Replace with your IP address
+    cidr_blocks = [data.aws_ssm_parameter.home_ip.value] # Change to specific IP or block
   }
 
   egress {
@@ -73,28 +147,30 @@ resource "aws_security_group" "rds_sg" {
   }
 }
 
-# EC2 Instance for LAMP Stack (Apache, PHP, GitHub code pull)
+# EC2 Instance for LAMP Stack
 resource "aws_instance" "lamp_instance" {
   ami               = "ami-0c76bd4bd302b30ec" # Amazon Linux 2 AMI
   instance_type     = "t2.micro"
   key_name          = "main-key"
   security_groups   = [aws_security_group.lamp_sg.name]
-  availability_zone = "eu-west-2a" # Adjust to your desired AZ
+  availability_zone = "eu-west-2a" # Adjust as needed
+
+  iam_instance_profile = aws_iam_instance_profile.ec2_ssm_role.name
 
   user_data = <<-EOF
     #!/bin/bash
     yum update -y
 
-    # Install Apache, PHP, Git, MySQL client
-    yum install -y httpd php php-mysqlnd mysql git
+    # Install LAMP stack and Git
+    yum install -y httpd php php-mysqlnd mysql git aws-cli
     systemctl start httpd
     systemctl enable httpd
 
-    # Clone the GitHub repository with the website code
+    # Clone the GitHub repository
     cd /var/www/html
-    git clone https://github.com/your-github-username/your-repository.git .
-    
-    # Set file permissions for Apache to serve the site
+    git clone https://github.com/IsaMukadam/LAMP-Stack-App.git .
+
+    # Set file permissions for Apache
     chown -R apache:apache /var/www/html
 
     # Restart Apache to serve the new code
@@ -114,9 +190,9 @@ resource "aws_db_instance" "lamp_db" {
   engine                 = "mysql"
   engine_version         = "8.0"
   username               = "admin"
-  password               = "your-password" # Consider using Secrets Manager for security
+  password               = data.aws_ssm_parameter.rds_password.value # Fetch password from SSM
   db_name                = "sampledb"
-  publicly_accessible    = true
+  publicly_accessible    = false
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
   skip_final_snapshot    = true
   multi_az               = false
@@ -132,7 +208,12 @@ resource "null_resource" "lamp_db_init" {
 
   provisioner "local-exec" {
     command = <<EOT
-      mysql -h ${aws_db_instance.lamp_db.endpoint} -u admin -p${aws_db_instance.lamp_db.password} -e "
+      while ! mysql -h ${aws_db_instance.lamp_db.endpoint} -u admin -p${data.aws_ssm_parameter.rds_password.value} -e "status"; do
+        echo "Waiting for MySQL to be ready..."
+        sleep 5
+      done
+
+      mysql -h ${aws_db_instance.lamp_db.endpoint} -u admin -p${data.aws_ssm_parameter.rds_password.value} -e "
       CREATE DATABASE IF NOT EXISTS sampledb;
       USE sampledb;
       CREATE TABLE IF NOT EXISTS users (
@@ -146,6 +227,18 @@ resource "null_resource" "lamp_db_init" {
       ('Alice Smith', 'alice@example.com');
     "
     EOT
+  }
+}
+
+########################################### CREATE SSM Parameter #############################################
+
+resource "aws_ssm_parameter" "rds_endpoint" {
+  name  = "/lamp/rds_endpoint"
+  type  = "String"
+  value = aws_db_instance.lamp_db.endpoint
+
+  lifecycle {
+    prevent_destroy = true // An example rule to prevent accidental deletion
   }
 }
 
